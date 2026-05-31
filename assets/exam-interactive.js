@@ -167,9 +167,17 @@
         }
       }
 
-      // Next: <details> with answer
+      // Next: <details> with answer and explanation
       var detailsEl = ulEl ? ulEl.nextElementSibling : null;
+      var explanationHTML = '';
       if (detailsEl && detailsEl.tagName === 'DETAILS') {
+        // Extract the explanation content (everything except <summary>)
+        var detailsClone = detailsEl.cloneNode(true);
+        var summaryEl = detailsClone.querySelector('summary');
+        if (summaryEl) {
+          summaryEl.remove();
+        }
+        explanationHTML = detailsClone.innerHTML.trim();
         elementsToRemove.push(detailsEl);
       }
 
@@ -185,7 +193,8 @@
         domain: domain,
         options: options,
         elementsToRemove: elementsToRemove,
-        detailsEl: detailsEl && detailsEl.tagName === 'DETAILS' ? detailsEl : null
+        detailsEl: detailsEl && detailsEl.tagName === 'DETAILS' ? detailsEl : null,
+        explanationHTML: explanationHTML
       });
     }
 
@@ -441,10 +450,11 @@
 
       if (selected.length === 0) {
         unanswered++;
-        showFeedback(wrapper, 'unanswered', '⚠️ No answer selected. Correct answer: ' + expected.raw);
+        showFeedback(wrapper, 'unanswered', '⚠️ No answer selected. Correct answer: ' + expected.raw, q.explanationHTML);
         highlightCorrectAnswer(wrapper, expected.values);
         continue;
       }
+
 
       var isCorrect = false;
       if (expected.values.length > 1) {
@@ -460,12 +470,12 @@
       if (isCorrect) {
         correct++;
         domainResults[domain].correct++;
-        showFeedback(wrapper, 'correct', '✅ Correct! Answer: ' + expected.raw);
+        showFeedback(wrapper, 'correct', '✅ Correct! Answer: ' + expected.raw, q.explanationHTML);
         markCorrectOptions(wrapper, expected.values);
       } else {
         incorrect++;
         var userAnswer = selected.length > 0 ? selected.join(', ') : '(none)';
-        showFeedback(wrapper, 'incorrect', '❌ Incorrect. Correct answer: ' + expected.raw + ' (you chose: ' + userAnswer + ')');
+        showFeedback(wrapper, 'incorrect', '❌ Incorrect. Correct answer: ' + expected.raw + ' (you chose: ' + userAnswer + ')', q.explanationHTML);
         highlightCorrectAnswer(wrapper, expected.values);
       }
 
@@ -485,12 +495,15 @@
     }
   }
 
-  function showFeedback(wrapper, type, message) {
+  function showFeedback(wrapper, type, message, explanationHTML) {
     wrapper.classList.add('exam-' + type);
     var feedback = wrapper.querySelector('.exam-q-feedback');
     if (feedback) {
       feedback.className = 'exam-q-feedback exam-feedback-' + type;
-      feedback.textContent = message;
+      feedback.innerHTML = '<div class="exam-feedback-message">' + message + '</div>';
+      if (explanationHTML) {
+        feedback.innerHTML += '<div class="exam-feedback-explanation">' + explanationHTML + '</div>';
+      }
       feedback.style.display = 'block';
     }
   }

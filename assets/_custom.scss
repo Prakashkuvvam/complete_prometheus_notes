@@ -951,6 +951,29 @@ pre:focus-within > .copy-button {
   color: #e67e22;
 }
 
+.exam-feedback-message {
+  margin-bottom: 0.25rem;
+  font-weight: 700;
+}
+
+.exam-feedback-explanation {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  font-weight: 400;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  opacity: 0.9;
+}
+
+.exam-feedback-explanation p {
+  margin: 0.25rem 0;
+}
+
+.exam-feedback-explanation strong {
+  font-weight: 700;
+}
+
 .exam-correct {
   border-color: rgba(39, 174, 96, 0.4);
   background: rgba(39, 174, 96, 0.03);
