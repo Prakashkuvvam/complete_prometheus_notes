@@ -1,201 +1,253 @@
 (function () {
   'use strict';
 
-  // ── Only run on practice test pages ──
+  /* =============================================================
+     PRACTICE TEST INTERACTIVE ENGINE
+     Transforms static practice test pages into interactive quizzes
+     with radio/checkbox answers, submit button, and scoring.
+     ============================================================= */
+
+  // ── Config ──
+  var PASS_THRESHOLD = 0.70; // 70%
+
   var article = document.querySelector('.book-article');
-  var details = article && article.querySelector('details');
-  if (!details) return;
+  if (!article) return;
 
-  // Check if this page has an answer key table (practice test indicator)
-  var answerTables = details.querySelectorAll('table');
-  if (!answerTables.length) return;
+  // ──────────────────────────────────────────────────────────
+  // 1. PARSE ANSWER KEY from the table at the bottom
+  // ──────────────────────────────────────────────────────────
 
-  /* =============================================================
-     1. COLLECT QUESTIONS FROM THE DOM
-     ============================================================= */
-
-  function collectQuestions(root) {
-    var children = [];
-    for (var i = 0; i < root.children.length; i++) {
-      children.push(root.children[i]);
-    }
-
-    var questions = [];
-    var currentDomain = 'General';
-
-    for (var ci = 0; ci < children.length; ci++) {
-      var el = children[ci];
-
-      // Track domain headings
-      if (el.tagName === 'H2' || el.tagName === 'H3') {
-        var headingText = el.textContent.trim();
-        if (/domain/i.test(headingText) || /^\d+\./.test(headingText)) {
-          currentDomain = headingText;
-        }
-        continue;
-      }
-
-      // Skip the details/answer section
-      if (el.tagName === 'DETAILS') {
-        break; // Everything after is answer key, stop collecting
-      }
-
-      // Look for <p><strong>Q#.</strong> pattern
-      if (el.tagName === 'P' && el.querySelector('strong')) {
-        var strong = el.querySelector('strong');
-        var strongText = strong.textContent.trim();
-        var qMatch = strongText.match(/^Q(\d+)\./i);
-        if (!qMatch) continue;
-
-        var qNum = parseInt(qMatch[1], 10);
-
-        // Get full question text (remove the Q#. prefix)
-        var qText = el.innerHTML;
-        qText = qText.replace(/<strong>Q\d+\.<\/strong>\s*/i, '').trim();
-
-        // Determine if multi-select (select two / choose two)
-        var isMulti = /select\s+two|choose\s+two|select\s+all|all\s+that\s+apply/i.test(el.textContent);
-
-        // Find options by scanning forward
-        var options = [];
-        var elementsToRemove = [el];
-
-        var scanEl = el.nextElementSibling;
-        while (scanEl && scanEl.tagName !== 'DETAILS' && options.length === 0) {
-          elementsToRemove.push(scanEl);
-
-          if (scanEl.tagName === 'UL') {
-            var items = scanEl.querySelectorAll('li');
-            var parsedAny = false;
-            for (var liIdx = 0; liIdx < items.length; liIdx++) {
-              var li = items[liIdx];
-              var liText = li.innerHTML.trim();
-              var liMatch = liText.match(/^([A-Z])[)\.]\s*/);
-              if (liMatch) {
-                options.push({
-                  key: liMatch[1].toUpperCase(),
-                  label: liText.substring(liMatch[0].length).trim()
-                });
-                parsedAny = true;
-              }
-            }
-            if (parsedAny && options.length === items.length) {
-              // This is our options element
-            } else if (parsedAny && options.length > 0) {
-              // Partial match
-            } else {
-              options = [];
-            }
-          } else if (scanEl.tagName === 'P') {
-            var pContent = scanEl.innerHTML;
-            var parts = pContent.split(/<br\s*\/?>/i);
-            if (parts.length >= 2) {
-              var parsedParts = [];
-              for (var pi = 0; pi < parts.length; pi++) {
-                var part = parts[pi].trim();
-                var optMatch = part.match(/^([A-Z])[)\.]\s*/);
-                if (optMatch) {
-                  parsedParts.push({
-                    key: optMatch[1].toUpperCase(),
-                    label: part.substring(optMatch[0].length).trim()
-                  });
-                }
-              }
-              if (parsedParts.length >= 2) {
-                options = parsedParts;
-              }
-            }
-          }
-
-          scanEl = scanEl.nextElementSibling;
-        }
-
-        questions.push({
-          number: qNum,
-          text: qText,
-          options: options,
-          domain: currentDomain,
-          isMulti: isMulti,
-          element: el,
-          elementsToRemove: elementsToRemove
-        });
-      }
-    }
-
-    return questions;
-  }
-
-  /* =============================================================
-     2. PARSE ANSWER KEY FROM TABLE(S)
-     ============================================================= */
-
-  function parseAnswerKey(tables) {
+  function parseAnswerKey() {
     var key = {};
+    var tables = article.querySelectorAll('table');
 
     for (var t = 0; t < tables.length; t++) {
       var table = tables[t];
+
+      // Check if this looks like an answer key table
+      var headerCells = table.querySelectorAll('th');
+      var isAnswerTable = false;
+      for (var h = 0; h < headerCells.length; h++) {
+        if (/^q$/i.test(headerCells[h].textContent.trim())) {
+          isAnswerTable = true;
+          break;
+        }
+      }
+      if (!isAnswerTable) continue;
+
       var rows = table.querySelectorAll('tbody tr');
-      if (!rows.length) {
-        rows = table.querySelectorAll('tr');
+      if (!rows.length) rows = table.querySelectorAll('tr');
+
+      // Determine column grouping from number of cells
+      // Layout (6 cols): Q | Answer | Domain | Q | Answer | Domain
+      // Layout (4 cols): Q | Answer | Q | Answer
+      // Layout (2 cols): Q | Answer
+      var numCells = 0;
+      if (rows.length > 0) {
+        numCells = rows[0].querySelectorAll('td').length;
+      }
+      var groupSize = 0;
+      var numGroups = 0;
+      if (numCells === 6) {
+        groupSize = 3; // Q, Answer, Domain — read Q at i, Answer at i+1
+        numGroups = 2;
+      } else if (numCells >= 4) {
+        groupSize = 2; // Q, Answer — read pairs
+        numGroups = Math.floor(numCells / 2);
+      } else {
+        groupSize = 2;
+        numGroups = 1;
       }
 
       for (var r = 0; r < rows.length; r++) {
         var cells = rows[r].querySelectorAll('td');
         if (cells.length < 2) continue;
 
-        var qNumStr = cells[0].textContent.trim();
-        var qNum = parseInt(qNumStr, 10);
-        if (isNaN(qNum)) continue;
+        for (var g = 0; g < numGroups; g++) {
+          var qIdx = g * groupSize;
+          var aIdx = g * groupSize + 1;
 
-        var answerCell = cells[1];
-        var strong = answerCell.querySelector('strong');
-        var answer = (strong ? strong.textContent : answerCell.textContent).trim().toUpperCase();
+          if (qIdx >= cells.length || aIdx >= cells.length) continue;
 
-        // Handle multi-answer like "A, B" or "A and B"
-        var answers = answer.split(/[,&]|and/i).map(function (a) { return a.trim(); });
-        key[qNum] = {
-          raw: answer,
-          values: answers
-        };
+          var qNumStr = cells[qIdx].textContent.trim();
+          var qNum = parseInt(qNumStr, 10);
+          if (isNaN(qNum)) continue;
+
+          var answerText = cells[aIdx].textContent.trim().toUpperCase();
+          // Split multi-answers like "A,C,D" or "A, C, D"
+          var answers = answerText.split(/[,;]/).map(function (a) { return a.trim(); }).filter(function (a) { return a.length > 0; });
+          key[qNum] = {
+            raw: cells[aIdx].textContent.trim(),
+            values: answers
+          };
+        }
       }
     }
-
     return key;
   }
 
-  /* =============================================================
-     3. TRANSFORM DOM FOR INTERACTIVITY
-     ============================================================= */
+  // ──────────────────────────────────────────────────────────
+  // 2. PARSE QUESTIONS from the DOM
+  // ──────────────────────────────────────────────────────────
 
-  function initInteractive(article, questions, answerKey) {
-    // ── Top bar ──
+  function parseQuestions() {
+    var questions = [];
+    var children = [];
+    for (var i = 0; i < article.children.length; i++) {
+      children.push(article.children[i]);
+    }
+
+    var currentDomain = 'General';
+
+    for (var ci = 0; ci < children.length; ci++) {
+      var el = children[ci];
+
+      // Track domain from h2 headers or Question parentheses
+      if (el.tagName === 'H2' && /domain|observability|prometheus|promql|instrumentation|alerting|fundamentals/i.test(el.textContent)) {
+        currentDomain = el.textContent.trim();
+        continue;
+      }
+
+      // Match <h3>Question N (Domain)</h3>
+      if (el.tagName !== 'H3') continue;
+      var h3Text = el.textContent.trim();
+      var qMatch = h3Text.match(/^Question\s+(\d+)\s*(?:\(([^)]*)\))?/i);
+      if (!qMatch) continue;
+
+      var qNum = parseInt(qMatch[1], 10);
+      var domain = qMatch[2] ? qMatch[2].trim() : currentDomain;
+
+      // Next element: question text (paragraph)
+      var textEl = el.nextElementSibling;
+      var qTextHTML = '';
+      var elementsToRemove = [el]; // Will remove h3 + question text + ul + details
+
+      if (textEl && textEl.tagName === 'P') {
+        qTextHTML = textEl.innerHTML;
+        elementsToRemove.push(textEl);
+      } else {
+        // No separate paragraph — use h3 text minus the "Question N" prefix
+        qTextHTML = h3Text.replace(/^Question\s+\d+\s*/i, '').replace(/\([^)]*\)/g, '').trim();
+      }
+
+      // Next: options list (<ul>)
+      var ulEl = textEl ? textEl.nextElementSibling : null;
+      var options = [];
+
+      if (ulEl && ulEl.tagName === 'UL') {
+        elementsToRemove.push(ulEl);
+        var items = ulEl.querySelectorAll('li');
+        for (var liIdx = 0; liIdx < items.length; liIdx++) {
+          var li = items[liIdx];
+          var liText = li.textContent.trim();
+
+          // Remove the checkbox markup if present (<input disabled type="checkbox">)
+          var inputEl = li.querySelector('input[type="checkbox"]');
+          if (inputEl) {
+            liText = liText.replace(/^\s*/, '');
+          } else {
+            // Also handle literal "[ ]" or "[x]" text
+            liText = liText.replace(/^\[\s*[x]?\s*\]\s*/i, '');
+          }
+
+          // Extract option key: "A) text" or "A. text"
+          var optMatch = liText.match(/^([A-Za-z])[).]\s*(.*)/);
+          if (optMatch) {
+            options.push({
+              key: optMatch[1].toUpperCase(),
+              label: optMatch[2].trim()
+            });
+          } else {
+            // No letter prefix — use letter based on position
+            options.push({
+              key: String.fromCharCode(65 + liIdx),
+              label: liText
+            });
+          }
+        }
+      }
+
+      // Next: <details> with answer
+      var detailsEl = ulEl ? ulEl.nextElementSibling : null;
+      if (detailsEl && detailsEl.tagName === 'DETAILS') {
+        elementsToRemove.push(detailsEl);
+      }
+
+      // Remove trailing <hr> if present
+      var hrEl = detailsEl ? detailsEl.nextElementSibling : null;
+      if (hrEl && hrEl.tagName === 'HR') {
+        elementsToRemove.push(hrEl);
+      }
+
+      questions.push({
+        number: qNum,
+        textHTML: qTextHTML,
+        domain: domain,
+        options: options,
+        elementsToRemove: elementsToRemove,
+        detailsEl: detailsEl && detailsEl.tagName === 'DETAILS' ? detailsEl : null
+      });
+    }
+
+    return questions;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 3. DETECT MULTI-SELECT
+  // ──────────────────────────────────────────────────────────
+
+  function isMultiSelect(qNum, answerKey, question) {
+    // Check answer key first — if multiple values, it's multi-select
+    var key = answerKey[qNum];
+    if (key && key.values.length > 1) return true;
+
+    // Check question text for multi-select keywords
+    var text = question.textHTML.toLowerCase();
+    return /select\s+(?:all|two|multiple|several)|choose\s+(?:all|two|multiple)|all\s+that\s+apply/i.test(text);
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 4. BUILD INTERACTIVE UI
+  // ──────────────────────────────────────────────────────────
+
+  function buildInteractiveUI(questions, answerKey) {
+    var totalQuestions = questions.length;
+
+    // ── Insert top control bar ──
     var topBar = document.createElement('div');
     topBar.className = 'exam-interactive-controls';
+    topBar.id = 'exam-top-bar';
     topBar.innerHTML =
       '<div class="exam-interactive-header">' +
-        '<h3>📝 Interactive Mode</h3>' +
-        '<p class="exam-interactive-subtitle">Select your answers below, then click "Submit Answers" at the bottom to check your score.</p>' +
+        '<h3>📝 Interactive Quiz Mode</h3>' +
+        '<p class="exam-interactive-subtitle">Select your answers below, then click <strong>"Submit Answers"</strong> at the bottom to check your score.</p>' +
       '</div>' +
       '<div class="exam-interactive-actions">' +
-        '<span class="exam-answered-badge" id="exam-answered-badge">0 / ' + questions.length + ' answered</span>' +
-        '<button class="exam-btn exam-btn-reset" id="exam-reset-btn">🔄 Clear All</button>' +
+        '<span class="exam-answered-badge" id="exam-answered-badge">0 / ' + totalQuestions + ' answered</span>' +
+        '<button class="exam-btn exam-btn-reset" id="exam-reset-btn">🔄 Clear All Answers</button>' +
       '</div>';
 
-    var examControls = article.querySelector('.exam-controls');
-    if (examControls) {
-      examControls.parentNode.insertBefore(topBar, examControls.nextSibling);
-    } else {
-      article.insertBefore(topBar, article.firstChild);
-    }
+    // Insert after the first hr or at top of article
+    var insertPoint = article.querySelector('hr') || article.firstChild;
+    article.insertBefore(topBar, insertPoint);
 
-    // Transform each question
+    // ── Transform each question ──
     for (var qi = 0; qi < questions.length; qi++) {
       var q = questions[qi];
-      transformQuestion(q, questions);
+      transformQuestion(q, answerKey, questions);
     }
 
-    // ── Bottom bar ──
-    var detailsEl = article.querySelector('details');
+    // ── Insert bottom bar with submit button ──
+    // Find the answer key heading and table — we'll insert before them
+    var answerKeyHeading = null;
+    var allH2 = article.querySelectorAll('h2');
+    for (var hi = 0; hi < allH2.length; hi++) {
+      if (/answer\s*key|score\s*calculation|answer/i.test(allH2[hi].textContent)) {
+        answerKeyHeading = allH2[hi];
+        break;
+      }
+    }
+
     var bottomBar = document.createElement('div');
     bottomBar.className = 'exam-interactive-controls exam-bottom-bar';
     bottomBar.id = 'exam-bottom-bar';
@@ -206,41 +258,70 @@
       '</div>' +
       '<div class="exam-score-summary" id="exam-score-summary" style="display:none;"></div>';
 
-    article.insertBefore(bottomBar, detailsEl);
+    if (answerKeyHeading) {
+      article.insertBefore(bottomBar, answerKeyHeading);
+    } else {
+      article.appendChild(bottomBar);
+    }
 
-    // Bind events
+    // Hide the original answer key table, score calculation, and answer key section
+    if (answerKeyHeading) {
+      var hideSibling = answerKeyHeading.nextElementSibling;
+      while (hideSibling) {
+        var next = hideSibling.nextElementSibling;
+        // Hide tables, paragraphs, hr, and any remaining h2 headings
+        if (hideSibling.tagName === 'TABLE' || hideSibling.tagName === 'P' || hideSibling.tagName === 'HR' || hideSibling.tagName === 'H2') {
+          hideSibling.style.display = 'none';
+        }
+        hideSibling = next;
+      }
+    }
+
+    // ── Event binding ──
     document.getElementById('exam-submit-btn').addEventListener('click', function () {
       gradeTest(questions, answerKey);
     });
 
-    function resetHandler() { resetTest(questions); }
-    document.getElementById('exam-reset-btn').addEventListener('click', resetHandler);
-    document.getElementById('exam-reset-btn-bottom').addEventListener('click', resetHandler);
+    function resetHandler() { resetTest(questions, answerKey); }
+    var resetBtn1 = document.getElementById('exam-reset-btn');
+    var resetBtn2 = document.getElementById('exam-reset-btn-bottom');
+    if (resetBtn1) resetBtn1.addEventListener('click', resetHandler);
+    if (resetBtn2) resetBtn2.addEventListener('click', resetHandler);
 
+    // Live answer count
     article.addEventListener('change', function () {
       updateAnsweredCount(questions);
     });
     updateAnsweredCount(questions);
   }
 
-  function transformQuestion(q, questions) {
+  // ──────────────────────────────────────────────────────────
+  // 5. TRANSFORM A SINGLE QUESTION
+  // ──────────────────────────────────────────────────────────
+
+  function transformQuestion(q, answerKey, allQuestions) {
+    var multi = isMultiSelect(q.number, answerKey, q);
+    var inputType = multi ? 'checkbox' : 'radio';
+    var groupName = 'exam-q-' + q.number;
+
+    // Create question card
     var wrapper = document.createElement('div');
     wrapper.className = 'exam-question-card';
     wrapper.dataset.qnum = q.number;
     wrapper.dataset.domain = q.domain;
 
+    // Header
     var header = document.createElement('div');
     header.className = 'exam-q-header';
-    header.innerHTML = '<span class="exam-q-number">Q' + q.number + '</span>' +
-      '<span class="exam-q-text">' + q.text + '</span>';
-
+    header.innerHTML =
+      '<span class="exam-q-number">' + q.number + '</span>' +
+      '<span class="exam-q-text">' + q.textHTML + '</span>' +
+      (multi ? ' <span class="exam-badge-multi">Multi-select</span>' : '');
     wrapper.appendChild(header);
 
+    // Options
     var optionsDiv = document.createElement('div');
     optionsDiv.className = 'exam-q-options';
-
-    var inputType = q.isMulti ? 'checkbox' : 'radio';
-    var groupName = 'exam-q-' + q.number;
 
     for (var oi = 0; oi < q.options.length; oi++) {
       var opt = q.options[oi];
@@ -276,17 +357,34 @@
 
     wrapper.appendChild(optionsDiv);
 
-    // Per-question clear button
+    // Clear button per question
     var clearRow = document.createElement('div');
     clearRow.className = 'exam-q-clear-row';
     var clearBtn = document.createElement('button');
-    clearBtn.className = 'exam-btn exam-btn-clear-q';
+    clearBtn.className = 'exam-btn-clear-q';
     clearBtn.textContent = '✕ Clear';
     clearBtn.type = 'button';
     clearBtn.addEventListener('click', function (e) {
       e.stopPropagation();
-      clearSingleQuestion(wrapper);
-      updateAnsweredCount(questions);
+      var inputs = wrapper.querySelectorAll('.exam-option-input');
+      for (var i = 0; i < inputs.length; i++) {
+        inputs[i].checked = false;
+      }
+      // Clear any feedback
+      var fb = wrapper.querySelector('.exam-q-feedback');
+      if (fb) {
+        fb.style.display = 'none';
+        fb.className = 'exam-q-feedback';
+      }
+      wrapper.classList.remove('exam-correct', 'exam-incorrect', 'exam-unanswered');
+      var opts = wrapper.querySelectorAll('.exam-option');
+      for (var j = 0; j < opts.length; j++) {
+        opts[j].classList.remove('exam-option-highlight-correct', 'exam-option-highlight-wrong');
+      }
+      for (var k = 0; k < inputs.length; k++) {
+        inputs[k].disabled = false;
+      }
+      updateAnsweredCount(allQuestions);
     });
     clearRow.appendChild(clearBtn);
     wrapper.appendChild(clearRow);
@@ -297,46 +395,27 @@
     feedback.id = 'exam-feedback-' + q.number;
     wrapper.appendChild(feedback);
 
-    // Replace elements
-    var parent = q.element.parentNode;
-    var insertBeforeEl = q.elementsToRemove[q.elementsToRemove.length - 1].nextElementSibling;
-    parent.insertBefore(wrapper, insertBeforeEl);
+    // Insert the card before the first element we're removing
+    var parent = q.elementsToRemove[0].parentNode;
+    parent.insertBefore(wrapper, q.elementsToRemove[0]);
+
+    // Remove the static elements
     for (var ri = 0; ri < q.elementsToRemove.length; ri++) {
       var elToRemove = q.elementsToRemove[ri];
-      if (elToRemove && elToRemove.parentNode === parent) {
-        parent.removeChild(elToRemove);
+      if (elToRemove && elToRemove.parentNode) {
+        elToRemove.parentNode.removeChild(elToRemove);
       }
     }
   }
 
-  function clearSingleQuestion(wrapper) {
-    var inputs = wrapper.querySelectorAll('.exam-option-input');
-    for (var i = 0; i < inputs.length; i++) {
-      inputs[i].checked = false;
-    }
-    var feedback = wrapper.querySelector('.exam-q-feedback');
-    if (feedback && feedback.style.display !== 'none') {
-      feedback.style.display = 'none';
-      feedback.className = 'exam-q-feedback';
-      wrapper.classList.remove('exam-correct', 'exam-incorrect', 'exam-unanswered');
-      var options = wrapper.querySelectorAll('.exam-option');
-      for (var j = 0; j < options.length; j++) {
-        options[j].classList.remove('exam-option-highlight-correct', 'exam-option-highlight-wrong');
-      }
-      for (var k = 0; k < inputs.length; k++) {
-        inputs[k].disabled = false;
-      }
-    }
-  }
-
-  /* =============================================================
-     4. GRADING
-     ============================================================= */
+  // ──────────────────────────────────────────────────────────
+  // 6. GRADING
+  // ──────────────────────────────────────────────────────────
 
   function gradeTest(questions, answerKey) {
-    var totalQuestions = questions.length;
-    var correctCount = 0;
-    var incorrectCount = 0;
+    var total = questions.length;
+    var correct = 0;
+    var incorrect = 0;
     var unanswered = 0;
     var domainResults = {};
 
@@ -351,47 +430,55 @@
         selected.push(inputs[si].value);
       }
 
-      var isCorrect = false;
       var expected = answerKey[q.number];
-
-      if (!expected || expected.values.length === 0) {
-        continue;
-      }
-
-      if (selected.length === 0) {
-        unanswered++;
-        showFeedback(wrapper, 'unanswered', 'No answer selected');
-        continue;
-      }
-
-      if (q.isMulti) {
-        var sortedSelected = selected.slice().sort().join(',');
-        var sortedExpected = expected.values.slice().sort().join(',');
-        isCorrect = sortedSelected === sortedExpected && selected.length === expected.values.length;
-      } else {
-        isCorrect = selected.length === 1 && selected[0] === expected.values[0];
-      }
-
-      if (isCorrect) {
-        correctCount++;
-        showFeedback(wrapper, 'correct', '✅ Correct! The answer is ' + expected.raw);
-      } else {
-        incorrectCount++;
-        var userAnswer = selected.length > 0 ? selected.join(', ') : '(none)';
-        showFeedback(wrapper, 'incorrect', '❌ Incorrect. Correct answer: ' + expected.raw + '. You chose: ' + userAnswer);
-        highlightCorrectAnswer(wrapper, expected.values);
-      }
+      if (!expected || expected.values.length === 0) continue;
 
       var domain = q.domain;
       if (!domainResults[domain]) {
         domainResults[domain] = { correct: 0, total: 0 };
       }
       domainResults[domain].total++;
-      if (isCorrect) domainResults[domain].correct++;
+
+      if (selected.length === 0) {
+        unanswered++;
+        showFeedback(wrapper, 'unanswered', '⚠️ No answer selected. Correct answer: ' + expected.raw);
+        highlightCorrectAnswer(wrapper, expected.values);
+        continue;
+      }
+
+      var isCorrect = false;
+      if (expected.values.length > 1) {
+        // Multi-select: compare sorted sets
+        var sortedSelected = selected.slice().sort().join(',');
+        var sortedExpected = expected.values.slice().sort().join(',');
+        isCorrect = sortedSelected === sortedExpected;
+      } else {
+        // Single-select
+        isCorrect = selected.length === 1 && selected[0] === expected.values[0];
+      }
+
+      if (isCorrect) {
+        correct++;
+        domainResults[domain].correct++;
+        showFeedback(wrapper, 'correct', '✅ Correct! Answer: ' + expected.raw);
+        markCorrectOptions(wrapper, expected.values);
+      } else {
+        incorrect++;
+        var userAnswer = selected.length > 0 ? selected.join(', ') : '(none)';
+        showFeedback(wrapper, 'incorrect', '❌ Incorrect. Correct answer: ' + expected.raw + ' (you chose: ' + userAnswer + ')');
+        highlightCorrectAnswer(wrapper, expected.values);
+      }
+
+      // Disable inputs after grading
+      var allInputs = wrapper.querySelectorAll('.exam-option-input');
+      for (var di = 0; di < allInputs.length; di++) {
+        allInputs[di].disabled = true;
+      }
     }
 
-    showScoreSummary(correctCount, totalQuestions, unanswered, domainResults, answerKey);
+    showScoreSummary(correct, total, unanswered, domainResults);
 
+    // Scroll to bottom
     var bottomBar = document.getElementById('exam-bottom-bar');
     if (bottomBar) {
       bottomBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -406,39 +493,46 @@
       feedback.textContent = message;
       feedback.style.display = 'block';
     }
-    var inputs = wrapper.querySelectorAll('.exam-option-input');
-    for (var i = 0; i < inputs.length; i++) {
-      inputs[i].disabled = true;
-    }
   }
 
   function highlightCorrectAnswer(wrapper, correctValues) {
     var options = wrapper.querySelectorAll('.exam-option');
     for (var i = 0; i < options.length; i++) {
       var opt = options[i];
+      var input = opt.querySelector('.exam-option-input');
       if (correctValues.indexOf(opt.dataset.key) !== -1) {
         opt.classList.add('exam-option-highlight-correct');
-      } else {
-        var input = opt.querySelector('.exam-option-input');
-        if (input && input.checked) {
-          opt.classList.add('exam-option-highlight-wrong');
-        }
+      } else if (input && input.checked) {
+        opt.classList.add('exam-option-highlight-wrong');
       }
     }
   }
 
-  /* =============================================================
-     5. SCORE SUMMARY
-     ============================================================= */
+  function markCorrectOptions(wrapper, correctValues) {
+    var options = wrapper.querySelectorAll('.exam-option');
+    for (var i = 0; i < options.length; i++) {
+      var opt = options[i];
+      if (correctValues.indexOf(opt.dataset.key) !== -1) {
+        opt.classList.add('exam-option-highlight-correct');
+      }
+    }
+  }
 
-  function showScoreSummary(correct, total, unanswered, domainResults, answerKey) {
+  // ──────────────────────────────────────────────────────────
+  // 7. SCORE SUMMARY
+  // ──────────────────────────────────────────────────────────
+
+  function showScoreSummary(correct, total, unanswered, domainResults) {
     var pct = total > 0 ? Math.round((correct / total) * 100) : 0;
     var passed = pct >= 70;
+    var passingScore = Math.ceil(total * PASS_THRESHOLD);
 
     var summary = document.getElementById('exam-score-summary');
     if (!summary) return;
 
     var html = '<div class="exam-score-card ' + (passed ? 'exam-passed' : 'exam-failed') + '">';
+
+    // Main score
     html += '  <div class="exam-score-main">';
     html += '    <span class="exam-score-pct">' + pct + '%</span>';
     html += '    <span class="exam-score-label">' + correct + ' / ' + total + ' correct</span>';
@@ -449,35 +543,39 @@
       html += '  <p class="exam-score-unanswered">⚠️ ' + unanswered + ' question' + (unanswered > 1 ? 's' : '') + ' unanswered</p>';
     }
 
+    // Progress bar
     html += '  <p class="exam-score-bar-wrapper"><span class="exam-score-bar" style="width:' + pct + '%;"></span></p>';
 
     // Domain breakdown
-    html += '  <div class="exam-domain-breakdown">';
-    html += '    <h4>📊 Domain Breakdown</h4>';
-    html += '    <table class="exam-domain-table">';
-    html += '      <thead><tr><th>Domain</th><th>Score</th><th>Status</th></tr></thead>';
-    html += '      <tbody>';
-
     var domainNames = Object.keys(domainResults);
-    for (var di = 0; di < domainNames.length; di++) {
-      var d = domainNames[di];
-      var dr = domainResults[d];
-      var dPct = dr.total > 0 ? Math.round((dr.correct / dr.total) * 100) : 0;
-      var dPassed = dPct >= 70;
-      html += '      <tr class="' + (dPassed ? 'domain-pass' : 'domain-fail') + '">';
-      html += '        <td>' + escapeHtml(d) + '</td>';
-      html += '        <td>' + dr.correct + '/' + dr.total + ' (' + dPct + '%)</td>';
-      html += '        <td>' + (dPassed ? '✅' : '🔴') + '</td>';
-      html += '      </tr>';
+    if (domainNames.length > 0) {
+      html += '  <div class="exam-domain-breakdown">';
+      html += '    <h4>📊 Domain Breakdown</h4>';
+      html += '    <table class="exam-domain-table">';
+      html += '      <thead><tr><th>Domain</th><th>Score</th><th>Status</th></tr></thead>';
+      html += '      <tbody>';
+
+      for (var di = 0; di < domainNames.length; di++) {
+        var d = domainNames[di];
+        var dr = domainResults[d];
+        var dPct = dr.total > 0 ? Math.round((dr.correct / dr.total) * 100) : 0;
+        var dPassed = dPct >= 70;
+        html += '      <tr class="' + (dPassed ? 'domain-pass' : 'domain-fail') + '">';
+        html += '        <td>' + escapeHtml(simplifyDomainName(d)) + '</td>';
+        html += '        <td>' + dr.correct + '/' + dr.total + ' (' + dPct + '%)</td>';
+        html += '        <td>' + (dPassed ? '✅' : '🔴') + '</td>';
+        html += '      </tr>';
+      }
+
+      html += '      </tbody>';
+      html += '    </table>';
+      html += '  </div>';
     }
 
-    html += '      </tbody>';
-    html += '    </table>';
-    html += '  </div>';
-
+    // Legend
     html += '  <div class="exam-score-legend">';
-    html += '    <p><strong>Passing score:</strong> 70% (' + Math.ceil(total * 0.7) + '/' + total + ')</p>';
-    html += '    <p>' + (passed ? '🎉 Great job! Ready for the exam.' : '📚 Review the domains marked in red and try again.') + '</p>';
+    html += '    <p><strong>Passing score:</strong> 70% (' + passingScore + '/' + total + ')</p>';
+    html += '    <p>' + (passed ? '🎉 Great job! Ready for the real exam.' : '📚 Review the domains marked in red, study the explanations, and try again.') + '</p>';
     html += '  </div>';
 
     html += '</div>';
@@ -485,13 +583,28 @@
     summary.innerHTML = html;
     summary.style.display = 'block';
 
+    // Change submit button to "Retry"
     var submitBtn = document.getElementById('exam-submit-btn');
     if (submitBtn) {
       submitBtn.textContent = '🔄 Retry Test';
-      submitBtn.onclick = function () {
-        resetTest(questions);
-      };
+      submitBtn.className = 'exam-btn exam-btn-reset';
+      // Replace with clone to remove old listeners
+      var newBtn = submitBtn.cloneNode(true);
+      submitBtn.parentNode.replaceChild(newBtn, submitBtn);
+      newBtn.addEventListener('click', function () {
+        resetTest(questions, answerKey);
+      });
     }
+  }
+
+  function simplifyDomainName(name) {
+    // Clean up domain names extracted from headings
+    return name
+      .replace(/^##?\s*/, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/^\d+\.\s*/, '')
+      .replace(/domain/i, '')
+      .trim() || 'General';
   }
 
   function escapeHtml(text) {
@@ -500,21 +613,15 @@
     return div.innerHTML;
   }
 
-  /* =============================================================
-     6. RESET
-     ============================================================= */
+  // ──────────────────────────────────────────────────────────
+  // 8. RESET
+  // ──────────────────────────────────────────────────────────
 
-  function resetTest(questions) {
+  function resetTest(questions, answerKey) {
     var summary = document.getElementById('exam-score-summary');
     if (summary) {
       summary.style.display = 'none';
       summary.innerHTML = '';
-    }
-
-    var submitBtn = document.getElementById('exam-submit-btn');
-    if (submitBtn) {
-      submitBtn.textContent = '✅ Submit Answers';
-      submitBtn.onclick = null;
     }
 
     for (var qi = 0; qi < questions.length; qi++) {
@@ -541,12 +648,15 @@
       }
     }
 
-    var newSubmitBtn = document.getElementById('exam-submit-btn');
-    if (newSubmitBtn) {
-      var clone = newSubmitBtn.cloneNode(true);
-      newSubmitBtn.parentNode.replaceChild(clone, newSubmitBtn);
-      clone.addEventListener('click', function () {
-        gradeTest(questions, parseAnswerKey(document.querySelectorAll('.book-page details table')));
+    // Re-bind submit button
+    var submitBtn = document.getElementById('exam-submit-btn');
+    if (submitBtn) {
+      submitBtn.textContent = '✅ Submit Answers';
+      submitBtn.className = 'exam-btn exam-btn-submit';
+      var newBtn = submitBtn.cloneNode(true);
+      submitBtn.parentNode.replaceChild(newBtn, submitBtn);
+      newBtn.addEventListener('click', function () {
+        gradeTest(questions, answerKey);
       });
     }
 
@@ -554,9 +664,9 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  /* =============================================================
-     7. ANSWERED COUNT
-     ============================================================= */
+  // ──────────────────────────────────────────────────────────
+  // 9. ANSWERED COUNT
+  // ──────────────────────────────────────────────────────────
 
   function updateAnsweredCount(questions) {
     var answered = 0;
@@ -571,32 +681,33 @@
     var badge = document.getElementById('exam-answered-badge');
     if (badge) {
       badge.textContent = answered + ' / ' + total + ' answered';
-      if (answered === total) {
-        badge.className = 'exam-answered-badge exam-answered-all';
-      } else {
-        badge.className = 'exam-answered-badge';
-      }
+      badge.className = 'exam-answered-badge' + (answered === total ? ' exam-answered-all' : '');
     }
   }
 
-  /* =============================================================
-     8. INIT
-     ============================================================= */
+  // ──────────────────────────────────────────────────────────
+  // 10. INIT
+  // ──────────────────────────────────────────────────────────
 
-  function autoInit() {
-    var questions = collectQuestions(article);
+  function init() {
+    // Only run on practice test pages
+    var firstH3 = article.querySelector('h3');
+    if (!firstH3) return;
+    if (!/^Question\s+\d+/i.test(firstH3.textContent)) return;
+
+    var answerKey = parseAnswerKey();
+    if (Object.keys(answerKey).length === 0) return;
+
+    var questions = parseQuestions();
     if (questions.length === 0) return;
 
-    var key = parseAnswerKey(answerTables);
-    if (Object.keys(key).length === 0) return;
-
-    initInteractive(article, questions, key);
+    buildInteractiveUI(questions, answerKey);
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', autoInit);
+    document.addEventListener('DOMContentLoaded', init);
   } else {
-    autoInit();
+    init();
   }
 
 })();
