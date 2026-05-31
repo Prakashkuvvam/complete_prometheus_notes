@@ -1,0 +1,16 @@
+[
+  {
+    "targets": ["localhost:8080", "localhost:8081"],
+    "labels": {
+      "service": "web",
+      "environment": "dev"
+    }
+  },
+  {
+    "targets": ["localhost:9090"],
+    "labels": {
+      "service": "prometheus",
+      "environment": "dev"
+    }
+  }
+]

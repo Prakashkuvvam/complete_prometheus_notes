@@ -1,0 +1,165 @@
+# ──────────────────────────────────────────────
+# Alertmanager Configuration — PCA Study Lab
+# ──────────────────────────────────────────────
+
+# ── Global Settings ──
+global:
+  # How long to wait before resolving an alert
+  resolve_timeout: 5m
+
+  # SMTP (email) configuration — replace with your SMTP server
+  smtp_smarthost: 'smtp.example.com:587'
+  smtp_from: 'alertmanager@example.com'
+  smtp_auth_username: 'alertmanager'
+  smtp_auth_password: 'replace-with-password'
+  smtp_require_tls: true
+
+# ── Routing Tree ──
+route:
+  # Default receiver (catch-all)
+  receiver: 'default'
+
+  # Group alerts by these labels to combine related notifications
+  group_by: ['alertname', 'severity', 'tier']
+
+  # How long to wait before sending the first notification for a new group
+  group_wait: 30s
+
+  # How long to wait before sending additional notifications for existing group
+  group_interval: 5m
+
+  # How often to re-send notifications for firing alerts
+  repeat_interval: 4h
+
+  # ── Sub-routes ──
+  routes:
+    # Tier 1 (Critical) — PagerDuty / immediate notification
+    - match:
+        pager: 'true'
+      receiver: 'pagerduty-critical'
+      repeat_interval: 15m
+      continue: false  # Stop after first match
+
+    # Tier 2 (Warning) — Slack channel
+    - match:
+        tier: '2'
+      receiver: 'slack-warning'
+      repeat_interval: 4h
+
+    # Infrastructure alerts — separate Slack channel
+    - match:
+        service: 'monitoring'
+      receiver: 'slack-infra'
+      continue: true  # Also continue to check other routes
+
+    # Application alerts
+    - match:
+        service: 'demo'
+      receiver: 'slack-app'
+
+# ── Inhibition Rules ──
+# Suppress lower-severity alerts when a higher-severity alert is firing
+inhibit_rules:
+  # If a service is down, suppress its CPU/memory/disk warnings
+  - source_match:
+      alertname: InstanceDown
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['instance']
+
+  # During a network outage, suppress service-level alerts
+  - source_match:
+      alertname: NoTraffic
+    target_match:
+      tier: '2|3'
+    equal: ['instance']
+
+  # If high error rate is firing, suppress individual service warnings
+  - source_match:
+      alertname: HighErrorRate
+    target_match_re:
+      severity: 'warning|info'
+    equal: ['job']
+
+# ── Receivers ──
+receivers:
+  # ── Default: Email ──
+  - name: 'default'
+    email_configs:
+      - to: 'team@example.com'
+        send_resolved: true
+        headers:
+          subject: '{{ .GroupLabels.alertname }} — {{ .Status }}'
+
+  # ── Slack: Critical Alerts ──
+  - name: 'pagerduty-critical'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/T00000000/B00000000/xxxxxxxx'
+        channel: '#alerts-critical'
+        send_resolved: true
+        title: '🚨 [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}
+            *Alert:* {{ .Labels.alertname }}
+            *Instance:* {{ .Labels.instance }}
+            *Severity:* {{ .Labels.severity }}
+            *Description:* {{ .Annotations.description }}
+            *Runbook:* {{ .Annotations.runbook }}
+            *Value:* {{ .Annotations.value }}
+          {{ end }}
+        actions:
+          - type: button
+            text: 'Acknowledge'
+            url: 'https://alertmanager.example.com/#/alerts?silenceRegex=alertname%3D{{ .GroupLabels.alertname }}'
+
+  # ── Slack: Warning Alerts ──
+  - name: 'slack-warning'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/T00000000/B00000000/xxxxxxxx'
+        channel: '#alerts-warning'
+        send_resolved: true
+        title: '⚠️ [{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+        text: >-
+          {{ range .Alerts }}
+            *{{ .Labels.alertname }}* on {{ .Labels.instance }}
+            {{ .Annotations.description }}
+          {{ end }}
+
+  # ── Slack: Infrastructure Alerts ──
+  - name: 'slack-infra'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/T00000000/B00000000/xxxxxxxx'
+        channel: '#infra-alerts'
+        send_resolved: true
+        title: '🖥️ Infrastructure Alert — {{ .GroupLabels.alertname }}'
+        text: '{{ .CommonAnnotations.description }}'
+
+  # ── Slack: Application Alerts ──
+  - name: 'slack-app'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/T00000000/B00000000/xxxxxxxx'
+        channel: '#app-alerts'
+        send_resolved: true
+        title: '📱 App Alert — {{ .GroupLabels.alertname }}'
+        text: '{{ .CommonAnnotations.description }}'
+
+  # ── PagerDuty (Critical) ──
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - routing_key: 'your-pagerduty-routing-key'
+        send_resolved: true
+        severity: 'critical'
+        description: '{{ .GroupLabels.alertname }} — {{ .CommonAnnotations.description }}'
+        client: 'Prometheus / Alertmanager'
+        client_url: 'https://alertmanager.example.com'
+
+  # ── Webhook (for custom integrations) ──
+  - name: 'webhook'
+    webhook_configs:
+      - url: 'http://webhook.example.com/alerts'
+        send_resolved: true
+        http_config:
+          basic_auth:
+            username: 'admin'
+            password_file: '/etc/alertmanager/webhook-password'

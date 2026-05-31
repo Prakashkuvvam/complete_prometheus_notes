@@ -1,0 +1,99 @@
+# ──────────────────────────────────────────────
+# Prometheus Configuration — PCA Study Lab
+# ──────────────────────────────────────────────
+
+global:
+  # How frequently to scrape targets
+  scrape_interval: 15s
+
+  # How frequently to evaluate rules
+  evaluation_interval: 15s
+
+  # How long to wait before timing out a scrape
+  scrape_timeout: 10s
+
+# ── Alertmanager Configuration ──
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# ── Rule Files ──
+rule_files:
+  - "alert.rules.yml"
+
+# ── Scrape Configurations ──
+scrape_configs:
+  # 1. Prometheus itself
+  - job_name: 'prometheus'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'monitoring'
+          component: 'prometheus'
+
+  # 2. Node Exporter (system metrics)
+  - job_name: 'node_exporter'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['node_exporter:9100']
+        labels:
+          service: 'monitoring'
+          component: 'node-exporter'
+
+  # 3. Sample Application
+  - job_name: 'sample_app'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['sample-app:8080']
+        labels:
+          service: 'demo'
+          component: 'sample-app'
+
+  # 4. Alertmanager
+  - job_name: 'alertmanager'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['alertmanager:9093']
+        labels:
+          service: 'monitoring'
+          component: 'alertmanager'
+
+  # 5. Pushgateway
+  - job_name: 'pushgateway'
+    scrape_interval: 15s
+    honor_labels: true  # Preserve labels pushed by the client
+    static_configs:
+      - targets: ['pushgateway:9091']
+        labels:
+          service: 'monitoring'
+          component: 'pushgateway'
+
+  # 6. Docker daemon (requires docker socket proxy or direct access)
+  # - job_name: 'docker'
+  #   static_configs:
+  #     - targets: ['host.docker.internal:9323']
+
+  # ── File-based Service Discovery Example ──
+  # Uncomment and create targets/*.json files
+  # - job_name: 'file_sd'
+  #   file_sd_configs:
+  #     - files:
+  #         - 'targets/*.json'
+  #       refresh_interval: 30s
+
+  # ── Relabeling Example ──
+  # - job_name: 'relabeled'
+  #   static_configs:
+  #     - targets: ['localhost:8080']
+  #       labels:
+  #         environment: 'production'
+  #         region: 'us-east-1'
+  #   relabel_configs:
+  #     - target_label: 'app'
+  #       replacement: 'my-app'
+  #     - source_labels: ['environment']
+  #       target_label: 'env'

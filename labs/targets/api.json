@@ -1,0 +1,18 @@
+[
+  {
+    "targets": ["api-1:8080", "api-2:8080", "api-3:8080"],
+    "labels": {
+      "service": "api",
+      "environment": "production",
+      "region": "us-east-1"
+    }
+  },
+  {
+    "targets": ["api-staging:8080"],
+    "labels": {
+      "service": "api",
+      "environment": "staging",
+      "region": "us-east-1"
+    }
+  }
+]

@@ -1,0 +1,17 @@
+# ──────────────────────────────────────────────
+# Grafana Dashboard Provisioning
+# ──────────────────────────────────────────────
+# Automatically loads dashboards from this directory
+
+apiVersion: 1
+
+providers:
+  - name: 'Prometheus PCA Labs'
+    orgId: 1
+    folder: 'PCA Labs'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards

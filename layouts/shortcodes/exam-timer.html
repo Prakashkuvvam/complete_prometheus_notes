@@ -1,0 +1,22 @@
+{{- $time := .Get "time" | default "90" -}}
+{{- $path := .Page.File.Path -}}
+{{- $testNum := "" -}}
+{{- if findRE "exam-practice-test" $path -}}
+  {{- $base := index (split $path "/") (sub (len (split $path "/")) 1) -}}
+  {{- $stem := replace $base ".md" "" -}}
+  {{- $parts := split $stem "-" -}}
+  {{- $testNum = index $parts (sub (len $parts) 1) -}}
+{{- end -}}
+<div class="exam-timer" data-minutes="{{ $time }}" data-test-id="exam-test-{{ $testNum }}">
+  <div class="timer-face">
+    <span class="timer-minutes">{{ $time }}</span>
+    <span class="timer-separator">:</span>
+    <span class="timer-seconds">00</span>
+  </div>
+  <div class="timer-controls">
+    <button class="timer-start">▶ Start</button>
+    <button class="timer-pause">⏸ Pause</button>
+    <button class="timer-reset">↺ Reset</button>
+  </div>
+  <span class="timer-status">Time Remaining</span>
+</div>
